@@ -1,3 +1,4 @@
 grasp-and-lift-eeg-detection
 .venv
 __pycache__
+model.pt
