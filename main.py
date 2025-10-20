@@ -1,19 +1,11 @@
 import numpy as np
-from zipfile import ZipFile
-import matplotlib.pyplot as plt
 import os
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
 import torch.nn as nn
 import torch.optim as optim
-import random
-import torch.nn.functional as F
-import argparse
-from sklearn import metrics
-from tqdm.notebook import tqdm
 import gc
-import shutil
 
 FILE_PATH = './grasp-and-lift-eeg-detection'
 list_dir = os.listdir(FILE_PATH)
@@ -25,24 +17,11 @@ torch.manual_seed(2021)
 np.random.seed(2021)
 device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--n_epochs", type=int, default=1, help="number of epochs of training")
-parser.add_argument("--batch_size", type=int, default=1024, help="size of the batches")
-parser.add_argument("--lr", type=float, default=0.002, help="adam's learning rate")
-parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
-parser.add_argument("--b2", type=float, default=0.99, help="adam: decay of first order momentum of gradient")
-parser.add_argument("--n_cpu", type=int, default=1, help="number of cpu threads to use during batch generation")
-parser.add_argument("--in_len", type=int, default=2**10, help="length of the input fed to neural net")
-parser.add_argument("--in_channels", type=int, default=32, help="number of signal channels")
-parser.add_argument("--out_channels", type=int, default=6, help="number of classes")
-parser.add_argument("--chunk", type=int, default=1000, help="length of splited chunks")
-opt, unknown = parser.parse_known_args()
 print(device)
 
 def read_csv(data, events):
     x = pd.read_csv(data)
     y = pd.read_csv(events)
-    id = '_'.join(x.iloc[0, 0].split('_')[:-1])
     x = x.iloc[:,1:].values
     y = y.iloc[:,1:].values
     return x, y
@@ -71,7 +50,9 @@ trainset = [(data - m) / s for data in trainset]
 
 valid_dataset = [(data - m) / s for data in valid_dataset]
 
-def resample_data(gt, chunk_size=opt.chunk):
+chunk_size = 1000
+
+def resample_data(gt):
     """
     split long signals to smaller chunks, discard no-events chunks  
     """
@@ -114,9 +95,9 @@ class EEGSignalDataset(Dataset):
     
     def __getitem__(self, i):
         i, j = self.index[i]
-        raw_data, label = self.data[i][:, max(0, j - opt.in_len + 1):j + 1], self.gt[i][:, j]
+        raw_data, label = self.data[i][:, max(0, j - 1024 + 1):j + 1], self.gt[i][:, j]
 
-        pad = opt.in_len - raw_data.shape[1]
+        pad = 1024 - raw_data.shape[1]
         if pad:
             raw_data = np.pad(raw_data, ((0, 0), (pad, 0)), 'constant', constant_values=0)
 
@@ -132,15 +113,15 @@ class EEGSignalDataset(Dataset):
         return len(self.index)
 
 dataset = EEGSignalDataset(trainset, gt) 
-dataloader = DataLoader(dataset, batch_size=opt.batch_size, shuffle=True)
+dataloader = DataLoader(dataset, batch_size=1024, shuffle=True)
 print(len(dataset))
 
 class NNet(nn.Module):
-    def __init__(self, in_channels=opt.in_channels, out_channels=opt.out_channels):
+    def __init__(self, in_channels=32, out_channels=6):
         super(NNet, self).__init__()
         self.hidden = 32
         self.net = nn.Sequential(
-            nn.Conv1d(opt.in_channels, opt.in_channels, 5, padding=2),
+            nn.Conv1d(32, 32, 5, padding=2),
             nn.Conv1d(self.hidden, self.hidden, 16, stride=16),
             nn.LeakyReLU(0.1),
             nn.Conv1d(self.hidden, self.hidden, 7, padding=3),
@@ -166,13 +147,15 @@ class NNet(nn.Module):
     def forward(self, x):
         return self.net(x)
     
+n_epochs = 10
+    
 nnet = NNet()
 nnet.to(device)
 loss_fnc = nn.BCELoss()
-adam = optim.Adam(nnet.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+adam = optim.Adam(nnet.parameters(), lr=0.002, betas=(0.5, 0.99))
 loss_his, train_loss = [], []
 nnet.train()
-for epoch in range(opt.n_epochs):
+for epoch in range(n_epochs):
     p_bar = dataloader
     print(len(p_bar))
     for i, (x, y) in enumerate(p_bar):
@@ -187,6 +170,6 @@ for epoch in range(opt.n_epochs):
         if i % 50 == 0:
             loss_his.append(np.mean(train_loss))
             train_loss.clear()
-    print('[Epoch {}/{}] [Loss: {}]'.format(epoch+1, opt.n_epochs, loss_his[-1]))
+    print('[Epoch {}/{}] [Loss: {}]'.format(epoch+1, n_epochs, loss_his[-1]))
     
 torch.save(nnet.state_dict(), 'model.pt')
